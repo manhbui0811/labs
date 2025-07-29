@@ -1,0 +1,93 @@
+internal class NotifyTemplate
+{
+    public string TemplateId { get; set; }
+    public string TemplateName { get; set; }
+    public string TemplateContent { get; set; }
+    public string TemplateType { get; set; }
+    public string TemplateStatus { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+
+    public bool EnableValidation { get; set; }
+    public int CheckDurationDays { get; set; }
+
+    // OrmLite sẽ lưu các List<string> này dưới dạng NVARCHAR2/NCLOB chứa JSON
+    public List<string>? NotAllowedIfAnySent { get; set; }
+    public List<string>? NotAllowedIfLatestIsAnyOf { get; set; }
+    public List<string>? RequiredLatestToBeAnyOf { get; set; }
+    public List<string>? RequiredAnyPreviousToBeAnyOf { get; set; }
+}
+
+
+public class NotificationService
+{
+    private readonly IDbConnectionFactory _dbFactory; // ServiceStack's IDbConnectionFactory
+
+    public NotificationService(IDbConnectionFactory dbFactory)
+    {
+        _dbFactory = dbFactory;
+    }
+
+    public bool CanSendMessage(NotifyTemplate template, NotifyMessage newMessage)
+    {
+        if (!template.EnableValidation)
+        {
+            return true; // Không cần kiểm tra validation
+        }
+
+        using (var db = _dbFactory.OpenDbConnection())
+        {
+            var cutoffDate = DateTime.UtcNow.AddDays(-template.CheckDurationDays);
+
+            // Lấy tất cả các tin nhắn đã gửi của RefId này trong khoảng thời gian CheckDurationDays
+            // Sắp xếp theo CreatedAt DESC để lấy bản ghi gần nhất dễ dàng
+            var existingMessages = db.Select<NotifyMessage>(q => q.RefId == newMessage.RefId && q.CreatedAt >= cutoffDate)
+                                     .OrderByDescending(m => m.CreatedAt)
+                                     .ToList();
+
+            var latestMessage = existingMessages.FirstOrDefault();
+
+            // Quy tắc 1: NotAllowedIfAnySent
+            if (template.NotAllowedIfAnySent != null && template.NotAllowedIfAnySent.Any())
+            {
+                if (existingMessages.Any(m => template.NotAllowedIfAnySent.Contains(m.TemplateId)))
+                {
+                    // Đã gửi 1 trong các template bị cấm
+                    return false;
+                }
+            }
+
+            // Quy tắc 2: NotAllowedIfLatestIsAnyOf
+            if (template.NotAllowedIfLatestIsAnyOf != null && template.NotAllowedIfLatestIsAnyOf.Any())
+            {
+                if (latestMessage != null && template.NotAllowedIfLatestIsAnyOf.Contains(latestMessage.TemplateId))
+                {
+                    // Tin nhắn gần nhất nằm trong danh sách cấm
+                    return false;
+                }
+            }
+
+            // Quy tắc 3: RequiredLatestToBeAnyOf
+            if (template.RequiredLatestToBeAnyOf != null && template.RequiredLatestToBeAnyOf.Any())
+            {
+                if (latestMessage == null || !template.RequiredLatestToBeAnyOf.Contains(latestMessage.TemplateId))
+                {
+                    // Tin nhắn gần nhất không nằm trong danh sách yêu cầu
+                    return false;
+                }
+            }
+
+            // Quy tắc 4: RequiredAnyPreviousToBeAnyOf
+            if (template.RequiredAnyPreviousToBeAnyOf != null && template.RequiredAnyPreviousToBeAnyOf.Any())
+            {
+                if (!existingMessages.Any(m => template.RequiredAnyPreviousToBeAnyOf.Contains(m.TemplateId)))
+                {
+                    // Không có bất kỳ tin nhắn nào trong danh sách yêu cầu đã được gửi trước đó
+                    return false;
+                }
+            }
+        }
+
+        return true; // Tất cả các kiểm tra validation đều thành công
+    }
+}

@@ -1,0 +1,89 @@
+public class TransactionBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TResponse>
+    where TRequest : IRequest<TResponse>
+{
+    private readonly ILogger<TransactionBehavior<TRequest, TResponse>> _logger;
+    private readonly IUnitOfWork _unitOfWork;
+
+    public TransactionBehavior(
+        IUnitOfWork unitOfWork,
+        ILogger<TransactionBehavior<TRequest, TResponse>> logger)
+    {
+        _unitOfWork = unitOfWork;
+        _logger = logger;
+    }
+
+    public async Task<TResponse> Handle(
+        TRequest request,
+        RequestHandlerDelegate<TResponse> next,
+        CancellationToken cancellationToken)
+    {
+        // Check if the request is a Command (not a Query)
+        // We can identify Commands by convention, for example by checking if they implement ICommand marker interface
+        // or simply by checking the request type name (ends with "Command")
+        var isCommand = typeof(TRequest).Name.EndsWith("Command");
+        if (!isCommand)
+            // It's a query, no transaction needed
+            return await next();
+
+        TResponse response;
+
+        try
+        {
+            await _unitOfWork.BeginTransactionAsync(cancellationToken);
+
+            _logger.LogInformation("Transaction started for {RequestType}", typeof(TRequest).Name);
+
+            response = await next();
+
+            await _unitOfWork.CommitTransactionAsync(cancellationToken);
+
+            _logger.LogInformation("Transaction committed for {RequestType}", typeof(TRequest).Name);
+        }
+        catch (Exception)
+        {
+            _logger.LogError("Transaction rolling back for {RequestType} due to error", typeof(TRequest).Name);
+
+            await _unitOfWork.RollbackTransactionAsync(cancellationToken);
+
+            throw;
+        }
+
+        return response;
+    }
+}
+
+
+public static class DependencyInjection
+{
+    public static IServiceCollection AddApplicationServices(this IServiceCollection services)
+    {
+        // Register MediatR
+        services.AddMediatR(config =>
+        {
+            config.RegisterServicesFromAssembly(Assembly.GetExecutingAssembly());
+
+            // Register behaviors - order matters
+            config.AddBehavior(typeof(IPipelineBehavior<,>), typeof(LoggingBehavior<,>));
+            config.AddBehavior(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
+            config.AddBehavior(typeof(IPipelineBehavior<,>), typeof(PerformanceBehavior<,>));
+            config.AddBehavior(typeof(IPipelineBehavior<,>), typeof(TransactionBehavior<,>));
+            //config.AddBehavior(typeof(IPipelineBehavior<,>), typeof(ExceptionHandlingBehavior<,>));
+        });
+
+        // Register FluentValidation
+        services.AddValidatorsFromAssembly(Assembly.GetExecutingAssembly());
+
+        // Register Mapster
+        var config = TypeAdapterConfig.GlobalSettings;
+        config.Scan(Assembly.GetExecutingAssembly());
+        services.AddSingleton(config);
+        //services.AddScoped<IMapper, ServiceMapper>();
+
+        // Register common services
+        services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(DependencyInjection).Assembly));
+
+        return services;
+    }
+    
+   
+}

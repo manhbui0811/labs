@@ -1,0 +1,121 @@
+public class ApiKeyRepository : Repository<ApiKey>, IApiKeyRepository
+{
+    private readonly ILogger<ApiKeyRepository> _logger;
+
+    public ApiKeyRepository(CPGDbContext context, ILogger<ApiKeyRepository> logger)
+        : base(context)
+    {
+        _logger = logger;
+    }
+
+
+public class Repository<T> : IRepository<T> where T : class
+{
+    protected readonly CPGDbContext _context;
+    protected readonly DbSet<T> _dbSet;
+
+    public Repository(CPGDbContext context)
+    {
+        _context = context ?? throw new ArgumentNullException(nameof(context));
+        _dbSet = context.Set<T>();
+    }
+
+    public async Task<T> GetByIdAsync(object id, CancellationToken cancellationToken = default)
+    {
+        return await _dbSet.FindAsync(new[] { id }, cancellationToken);
+    }
+
+    public async Task<T> FindAsync(Expression<Func<T, bool>> predicate, CancellationToken cancellationToken = default)
+    {
+        return await _dbSet.FirstOrDefaultAsync(predicate, cancellationToken);
+    }
+
+    public async Task<IEnumerable<T>> FindAllAsync(Expression<Func<T, bool>> predicate,
+        CancellationToken cancellationToken = default)
+    {
+        return await _dbSet.Where(predicate).ToListAsync(cancellationToken);
+    }
+
+    public async Task<IEnumerable<T>> GetAllAsync(CancellationToken cancellationToken = default)
+    {
+        return await _dbSet.ToListAsync(cancellationToken);
+    }
+
+    public async Task<T> CreateAsync(T entity, CancellationToken cancellationToken = default)
+    {
+        await _dbSet.AddAsync(entity, cancellationToken);
+        return entity;
+    }
+
+    public Task<T> UpdateAsync(T entity, CancellationToken cancellationToken = default)
+    {
+        _context.Entry(entity).State = EntityState.Modified;
+        return Task.FromResult(entity);
+    }
+
+    public Task<bool> DeleteAsync(T entity, CancellationToken cancellationToken = default)
+    {
+        _dbSet.Remove(entity);
+        return Task.FromResult(true);
+    }
+
+    public async Task<bool> ExistsAsync(Expression<Func<T, bool>> predicate,
+        CancellationToken cancellationToken = default)
+    {
+        return await _dbSet.AnyAsync(predicate, cancellationToken);
+    }
+
+    public async Task<T> FirstOrDefaultAsync(ISpecification<T> specification,
+        CancellationToken cancellationToken = default)
+    {
+        return await ApplySpecification(specification).FirstOrDefaultAsync(cancellationToken);
+    }
+
+    public async Task<IEnumerable<T>> GetListAsync(ISpecification<T> specification,
+        CancellationToken cancellationToken = default)
+    {
+        return await ApplySpecification(specification).ToListAsync(cancellationToken);
+    }
+
+    public async Task<int> CountAsync(ISpecification<T> specification, CancellationToken cancellationToken = default)
+    {
+        return await ApplySpecification(specification).CountAsync(cancellationToken);
+    }
+
+    private IQueryable<T> ApplySpecification(ISpecification<T> specification)
+    {
+        return SpecificationEvaluator<T>.GetQuery(_dbSet.AsQueryable(), specification);
+    }
+}
+
+public class SpecificationEvaluator<T> where T : class
+{
+    public static IQueryable<T> GetQuery(IQueryable<T> inputQuery, ISpecification<T> specification)
+    {
+        var query = inputQuery;
+
+        // Modify query with the given specification's criteria
+        if (specification.Criteria != null) query = query.Where(specification.Criteria);
+
+        // Include all specified related entities
+        query = specification.Includes.Aggregate(query,
+            (current, include) => current.Include(include));
+
+        // Include any string-based include statements
+        query = specification.IncludeStrings.Aggregate(query,
+            (current, include) => current.Include(include));
+
+        // Apply ordering if expressions are set
+        if (specification.OrderBy != null)
+            query = query.OrderBy(specification.OrderBy);
+        else if (specification.OrderByDescending != null)
+            query = query.OrderByDescending(specification.OrderByDescending);
+
+        // Apply paging if enabled
+        if (specification.IsPagingEnabled)
+            query = query.Skip(specification.Skip)
+                .Take(specification.Take);
+
+        return query;
+    }
+}

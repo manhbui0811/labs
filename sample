@@ -1,0 +1,91 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+
+using CyberSource.Api;
+using CyberSource.Model;
+
+namespace Cybersource_rest_samples_dotnet.Samples.Payments
+{
+    public class PinDebitPurchaseUsingEMVTechnologyWithContactlessReadWithVisaPlatformConnect
+    {
+        public static PtsV2PaymentsPost201Response Run()
+        {
+            Ptsv2paymentsClientReferenceInformation clientReferenceInformation = new Ptsv2paymentsClientReferenceInformation(
+                Code: "10000565",
+                Comments: "TransitDA BAU full value sale",
+                TransactionId: "1234567890"
+           );
+
+            Ptsv2paymentsProcessingInformation processingInformation = new Ptsv2paymentsProcessingInformation(
+                IndustryDataType:"transit",
+                CommerceIndicator: "retail",
+                Capture: true,
+                CaptureOptions: new Ptsv2paymentsProcessingInformationCaptureOptions(
+                    DateToCapture: "0425"
+                ),
+                AuthorizationOptions: new Ptsv2paymentsProcessingInformationAuthorizationOptions(
+                    DeferredAuthIndicator: true,
+                    AggregatedAuthIndicator: "true"
+                )
+           );
+
+            Ptsv2paymentsPaymentInformation paymentInformation = new Ptsv2paymentsPaymentInformation(
+                Card: new Ptsv2paymentsPaymentInformationCard(
+                    Type: "001"
+                )
+           );
+
+            string orderInformationAmountDetailsTotalAmount = "202.00";
+            string orderInformationAmountDetailsCurrency = "USD";
+            Ptsv2paymentsOrderInformationAmountDetails orderInformationAmountDetails = new Ptsv2paymentsOrderInformationAmountDetails(
+                TotalAmount: orderInformationAmountDetailsTotalAmount,
+                Currency: orderInformationAmountDetailsCurrency
+           );
+
+            Ptsv2paymentsOrderInformation orderInformation = new Ptsv2paymentsOrderInformation(
+                AmountDetails: orderInformationAmountDetails
+           );
+
+            string pointOfSaleInformationEmvTags = "9F3303204000950500000000009F3704518823719F100706011103A000009F26081E1756ED0E2134E29F36020015820200009C01009F1A0208409A030006219F02060000000020005F2A0208409F0306000000000000";
+            string pointOfSaleInformationTrackData = "%B4111111111111111^JONES/JONES ^3112101976110000868000000?;4111111111111111=16121019761186800000?";
+            Ptsv2paymentsPointOfSaleInformation pointOfSaleInformation = new Ptsv2paymentsPointOfSaleInformation(
+                TerminalId: "12345678",
+                CatLevel: 2,
+                EntryMode: "contactless",
+                TerminalCapability: 5,
+                TerminalPinCapability:0,
+                Emv: new Ptsv2paymentsPointOfSaleInformationEmv(
+                    Tags: pointOfSaleInformationEmvTags,
+                    CardSequenceNumber: "1"
+                 ),
+                TrackData: pointOfSaleInformationTrackData
+           );
+
+            var requestObj = new CreatePaymentRequest(
+                ClientReferenceInformation: clientReferenceInformation,
+                ProcessingInformation: processingInformation,
+                PaymentInformation: paymentInformation,
+                OrderInformation: orderInformation,
+                PointOfSaleInformation: pointOfSaleInformation
+           );
+
+            try
+            {
+                var configDictionary = new Configuration().GetAlternativeConfiguration();
+                var clientConfig = new CyberSource.Client.Configuration(merchConfigDictObj: configDictionary);
+
+                Console.WriteLine(requestObj);
+                var apiInstance = new PaymentsApi(clientConfig);
+                PtsV2PaymentsPost201Response result = apiInstance.CreatePayment(requestObj);
+                Console.WriteLine(result);
+                return result;
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine("Exception on calling the API : " + e.Message);
+                return null;
+            }
+        }
+    }
+}

@@ -1,0 +1,402 @@
+using System.Security.Claims;
+using System.Text.Encodings.Web;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using VietinBank.CardlessServer.Application.Common.Configurations;
+using VietinBank.CardlessServer.Domain.AggregateRoots;
+using VietinBank.CardlessServer.Domain.Enums;
+using VietinBank.CardlessServer.Domain.Interfaces;
+
+namespace VietinBank.CardlessServer.Infrastructure.Security.Authentication;
+
+public class ApiKeyAuthenticationOptions : AuthenticationSchemeOptions
+{
+}
+
+public class ApiKeyAuthenticationHandler : AuthenticationHandler<ApiKeyAuthenticationOptions>
+{
+    private const string ApiKeyHeaderName = "X-API-Key";
+    private const string ClientAppHeaderName = "X-Client-App";
+    private readonly IApiKeyService _apiKeyService;
+    private readonly ILogger<ApiKeyAuthenticationHandler> _logger;
+    private readonly SecurityOptions _securityOptions;
+    private readonly IUnitOfWork _unitOfWork;
+    private readonly IMemoryCache _memoryCache; // Injected IMemoryCache
+
+    public ApiKeyAuthenticationHandler(
+        IOptionsMonitor<ApiKeyAuthenticationOptions> options,
+        ILoggerFactory loggerFactory,
+        UrlEncoder encoder,
+        ISystemClock clock,
+        IApiKeyService apiKeyService,
+        IUnitOfWork unitOfWork,
+        IOptions<SecurityOptions> securityOptions,
+        IMemoryCache memoryCache) // Inject IMemoryCache
+        : base(options, loggerFactory, encoder, clock)
+    {
+        _apiKeyService = apiKeyService ?? throw new ArgumentNullException(nameof(apiKeyService));
+        _unitOfWork = unitOfWork ?? throw new ArgumentNullException(nameof(unitOfWork));
+        _logger = loggerFactory.CreateLogger<ApiKeyAuthenticationHandler>();
+        _securityOptions = securityOptions?.Value ?? throw new ArgumentNullException(nameof(securityOptions));
+        _memoryCache = memoryCache ?? throw new ArgumentNullException(nameof(memoryCache));
+    }
+
+    protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
+    {
+        ClientApp clientApp = null;
+        ApiKey apiKeyEntity; // Will be populated by _apiKeyService
+
+        if (!Request.Headers.TryGetValue(ApiKeyHeaderName, out var apiKeyHeaderValues))
+        {
+            _logger.LogDebug("API key authentication: No {HeaderName} header present.", ApiKeyHeaderName);
+            return AuthenticateResult.NoResult();
+        }
+
+        var apiKeyWithSecret = apiKeyHeaderValues.FirstOrDefault();
+        if (string.IsNullOrEmpty(apiKeyWithSecret))
+        {
+            _logger.LogDebug("API key authentication: {HeaderName} header is empty.", ApiKeyHeaderName);
+            return AuthenticateResult.NoResult();
+        }
+
+        var apiKeyParts = apiKeyWithSecret.Split(':', 2);
+        if (apiKeyParts.Length != 2)
+        {
+            _logger.LogWarning("API key authentication: Invalid API key format in {HeaderName} header.", ApiKeyHeaderName);
+            return AuthenticateResult.Fail("Invalid API key format.");
+        }
+
+        var keyPart = apiKeyParts[0];
+        var secretPart = apiKeyParts[1];
+        var keyPrefixForLogging = keyPart.Length > 8 ? keyPart[..8] : keyPart;
+
+        try
+        {
+            var validationResult = await _apiKeyService.ValidateApiKeyAndSecretAsync(
+                keyPart, secretPart, Context.Connection.RemoteIpAddress?.ToString(), CancellationToken.None);
+
+            if (!validationResult.IsValid)
+            {
+                _logger.LogWarning(
+                    "API key authentication: Validation failed by ApiKeyService for key prefix: {KeyPrefix}. Reason: {Reason}",
+                    keyPrefixForLogging,
+                    validationResult.ApiKeyEntity == null ? "Key not found or secret mismatch" : $"Key status: {validationResult.ApiKeyEntity.Status}, Expires: {validationResult.ApiKeyEntity.ExpiresAt}"
+                );
+                return AuthenticateResult.Fail("Invalid API key or secret.");
+            }
+
+            apiKeyEntity = validationResult.ApiKeyEntity;
+            if (apiKeyEntity == null) // Should not happen if IsValid is true
+            {
+                _logger.LogError("API key authentication anomaly: Key validated but entity is null for prefix: {KeyPrefix}", keyPrefixForLogging);
+                return AuthenticateResult.Fail("API key validation anomaly.");
+            }
+            _logger.LogDebug("API key validated successfully for prefix: {KeyPrefix}, Type: {KeyType}", apiKeyEntity.ApiKeyPrefix, apiKeyEntity.KeyType);
+
+
+            var requestIpAddress = Context.Connection.RemoteIpAddress?.ToString();
+            string requestClientAppCode = Request.Headers.TryGetValue(ClientAppHeaderName, out var clientAppHeaderValues)
+                ? clientAppHeaderValues.FirstOrDefault()
+                : null;
+
+            if (apiKeyEntity.KeyType == ApiKeyType.ClientApp)
+            {
+                if (!apiKeyEntity.OwnerEntityId.HasValue)
+                {
+                    _logger.LogWarning("API key authentication: ClientApp API key {ApiKeyPrefix} has no OwnerEntityId.", apiKeyEntity.ApiKeyPrefix);
+                    return AuthenticateResult.Fail("Invalid ClientApp API key configuration (missing owner).");
+                }
+
+                var clientAppId = apiKeyEntity.OwnerEntityId.Value;
+                string clientAppCacheKey = $"ClientApp_{clientAppId}";
+
+                if (!_memoryCache.TryGetValue(clientAppCacheKey, out clientApp))
+                {
+                    _logger.LogDebug("ClientApp {ClientAppId} for API key {ApiKeyPrefix} not in cache. Fetching from DB.", clientAppId, apiKeyEntity.ApiKeyPrefix);
+                    clientApp = await _unitOfWork.ClientApps.GetByIdAsync(
+                        clientAppId,
+                        true, // includeRoles: true - Eager load roles
+                        CancellationToken.None);
+
+                    if (clientApp != null)
+                    {
+                        var cacheEntryOptions = new MemoryCacheEntryOptions()
+                            .SetSlidingExpiration(TimeSpan.FromMinutes(5)); // Cache for 5 minutes
+                        _memoryCache.Set(clientAppCacheKey, clientApp, cacheEntryOptions);
+                        _logger.LogDebug("ClientApp {ClientAppId} ({ClientAppCode}) cached for API key {ApiKeyPrefix}.", clientApp.Id, clientApp.AppCode, apiKeyEntity.ApiKeyPrefix);
+                    }
+                }
+                else
+                {
+                    _logger.LogDebug("ClientApp {ClientAppId} ({ClientAppCode}) for API key {ApiKeyPrefix} found in cache.", clientApp.Id, clientApp.AppCode, apiKeyEntity.ApiKeyPrefix);
+                }
+
+                if (clientApp == null)
+                {
+                    _logger.LogWarning("API key authentication: ClientApp with ID '{ClientAppId}' (owner of key {ApiKeyPrefix}) not found.",
+                        clientAppId, apiKeyEntity.ApiKeyPrefix);
+                    return AuthenticateResult.Fail("Associated ClientApp not found.");
+                }
+
+                if (!string.IsNullOrEmpty(requestClientAppCode) && requestClientAppCode != clientApp.AppCode)
+                {
+                    _logger.LogWarning("API key authentication: ClientApp code mismatch for key {ApiKeyPrefix}. Expected: {ExpectedCode}, Received: {ReceivedCode}.",
+                        apiKeyEntity.ApiKeyPrefix, clientApp.AppCode, requestClientAppCode);
+                    return AuthenticateResult.Fail("ClientApp code mismatch.");
+                }
+
+                if (_securityOptions.CheckAllowedHosts && clientApp.IpAllowlistEntries.Any())
+                {
+                    if (!clientApp.ContainsIpAddress(requestIpAddress))
+                    {
+                        _logger.LogWarning("API key authentication: Request IP '{RequestIp}' not in allowlist for ClientApp '{ClientAppCode}' (key {ApiKeyPrefix}).",
+                            requestIpAddress, clientApp.AppCode, apiKeyEntity.ApiKeyPrefix);
+                        return AuthenticateResult.Fail("IP address not allowed for this ClientApp.");
+                    }
+                }
+                _logger.LogDebug("ClientApp specific checks passed for API key {ApiKeyPrefix} and ClientApp {ClientAppCode}.", apiKeyEntity.ApiKeyPrefix, clientApp.AppCode);
+            }
+
+            var claims = new List<Claim>
+            {
+                new(ClaimTypes.NameIdentifier, apiKeyEntity.Id.ToString()),
+                new("client_id", apiKeyEntity.ApiKeyPrefix), // Using "client_id" as per your logs
+                new(ClaimTypes.AuthenticationMethod, Scheme.Name),
+                new("key_type", apiKeyEntity.KeyType.ToString())
+            };
+
+            // Add a base role claim based on the key type itself
+            claims.Add(new Claim(ClaimTypes.Role, apiKeyEntity.KeyType.ToString().ToLowerInvariant()));
+
+            if (apiKeyEntity.KeyType == ApiKeyType.ClientApp && clientApp != null)
+            {
+                claims.Add(new Claim("client_app_id", clientApp.Id.ToString()));
+                claims.Add(new Claim("client_app_code", clientApp.AppCode));
+
+                if (clientApp.ClientAppRoles != null && clientApp.ClientAppRoles.Any())
+                {
+                    foreach (var clientAppRoleRelation in clientApp.ClientAppRoles)
+                    {
+                        if (clientAppRoleRelation.Role != null) // Role should be eager loaded
+                        {
+                            _logger.LogDebug("Adding specific ClientApp role: {RoleId} ({RoleName}) for ClientApp {ClientAppCode}",
+                                clientAppRoleRelation.Role.Id, clientAppRoleRelation.Role.Name, clientApp.AppCode);
+                            claims.Add(new Claim(ClaimTypes.Role, clientAppRoleRelation.Role.Id)); // Role ID as a role claim
+                            // Optionally add role name as a separate claim if needed elsewhere
+                            // claims.Add(new Claim("app_role_name", clientAppRoleRelation.Role.Name));
+                        }
+                    }
+                }
+            }
+
+            var identity = new ClaimsIdentity(claims, Scheme.Name);
+            var principal = new ClaimsPrincipal(identity);
+            var ticket = new AuthenticationTicket(principal, Scheme.Name);
+
+            _logger.LogInformation("API key authentication successful for key prefix: {KeyPrefix}, Type: {KeyType}, ClientAppId (if any): {ClientAppId}",
+                apiKeyEntity.ApiKeyPrefix, apiKeyEntity.KeyType, clientApp?.Id.ToString() ?? "N/A");
+            return AuthenticateResult.Success(ticket);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "API key authentication error for key prefix {KeyPrefix}: {Message}", keyPrefixForLogging, ex.Message);
+            return AuthenticateResult.Fail($"An error occurred during API key authentication: {ex.Message}");
+        }
+    }
+
+    protected override Task HandleChallengeAsync(AuthenticationProperties properties)
+    {
+        Response.StatusCode = 401; // Unauthorized
+        return Task.CompletedTask;
+    }
+
+    protected override Task HandleForbiddenAsync(AuthenticationProperties properties)
+    {
+        Response.StatusCode = 403; // Forbidden
+        return Task.CompletedTask;
+    }
+}
+
+
+
+
+using System.Security.Claims;
+using System.Text.Json;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.IdentityModel.Tokens;
+using VietinBank.CardlessServer.Infrastructure.Security.Authentication;
+
+namespace VietinBank.CardlessServer.API.Extensions;
+
+public static class AuthenticationExtensions
+{
+    public const string ApiKeySchemeConstant = "ApiKey";
+
+    public static IServiceCollection AddCardlessServerAuthentication(this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        var authBuilder = services.AddAuthentication(options =>
+        {
+            // Đặt JWT làm scheme mặc định nếu Keycloak được cấu hình
+            // Nếu không có Keycloak, sẽ không có default scheme rõ ràng ở đây trừ khi bạn muốn set ApiKey là default
+            var keycloakOptionsSectionForDefault = configuration.GetSection("Keycloak");
+            if (keycloakOptionsSectionForDefault.Exists() &&
+                !string.IsNullOrEmpty(keycloakOptionsSectionForDefault["Authority"]) &&
+                !string.IsNullOrEmpty(keycloakOptionsSectionForDefault["Audience"]))
+            {
+                options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+                options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+                options.DefaultScheme = JwtBearerDefaults.AuthenticationScheme;
+            }
+            // else bạn có thể không set default, hoặc set ApiKeySchemeConstant nếu đó là fallback mong muốn
+        });
+
+        // Configure API Key Authentication
+        authBuilder.AddScheme<ApiKeyAuthenticationOptions, ApiKeyAuthenticationHandler>(ApiKeySchemeConstant,
+            options => { });
+
+        // Configure JWT Authentication with KeyCloak
+        var keycloakOptionsSection = configuration.GetSection("Keycloak");
+        if (keycloakOptionsSection.Exists() &&
+            !string.IsNullOrEmpty(keycloakOptionsSection["Authority"]) &&
+            !string.IsNullOrEmpty(keycloakOptionsSection["Audience"]))
+            authBuilder.AddJwtBearer(JwtBearerDefaults.AuthenticationScheme, options =>
+            {
+                options.Authority = keycloakOptionsSection["Authority"];
+                options.Audience = keycloakOptionsSection["Audience"];
+                options.RequireHttpsMetadata = keycloakOptionsSection.GetValue<bool>("RequireHttpsMetadata");
+                options.SaveToken = true;
+                options.TokenValidationParameters = new TokenValidationParameters
+                {
+                    ValidateIssuer =
+                        keycloakOptionsSection.GetValue<bool>("TokenValidationParameters:ValidateIssuer", true),
+                    ValidIssuer = keycloakOptionsSection["Authority"],
+                    ValidateAudience =
+                        keycloakOptionsSection.GetValue<bool>("TokenValidationParameters:ValidateAudience", true),
+                    ValidAudience = keycloakOptionsSection["Audience"],
+                    ValidateLifetime =
+                        keycloakOptionsSection.GetValue<bool>("TokenValidationParameters:ValidateLifetime", true),
+                    ValidateIssuerSigningKey =
+                        keycloakOptionsSection.GetValue<bool>("TokenValidationParameters:ValidateIssuerSigningKey",
+                            true),
+                    NameClaimType = keycloakOptionsSection["TokenValidationParameters:NameClaimType"] ??
+                                    "preferred_username",
+                    ClockSkew = TimeSpan.FromMinutes(1)
+                };
+                options.Events = new JwtBearerEvents
+                {
+                    OnAuthenticationFailed = context =>
+                    {
+                        var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<JwtBearerEvents>>();
+                        logger.LogError("JWT Auth failed: {ErrorMessage}", context.Exception?.Message);
+                        return Task.CompletedTask;
+                    },
+                    OnTokenValidated = context =>
+                    {
+                        var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<JwtBearerEvents>>();
+                        logger.LogInformation("JWT Token validated for {User}", context.Principal?.Identity?.Name);
+
+                        // Debugging - log all claims
+                        foreach (var claim in context.Principal.Claims)
+                            logger.LogDebug("Claim: {Type} = {Value}", claim.Type, claim.Value);
+
+                        if (context.Principal?.Identity is ClaimsIdentity identity)
+                        {
+                            // Tìm claim "realm_access"
+                            var realmAccessClaim = context.Principal.FindFirst("realm_access");
+                            if (realmAccessClaim != null && !string.IsNullOrEmpty(realmAccessClaim.Value))
+                            {
+                                logger.LogDebug("Found realm_access: {Value}", realmAccessClaim.Value);
+                                try
+                                {
+                                    // Deserialize JSON
+                                    var realmAccess = JsonSerializer.Deserialize<JsonElement>(realmAccessClaim.Value);
+
+                                    if (realmAccess.TryGetProperty("roles", out var roles) &&
+                                        roles.ValueKind == JsonValueKind.Array)
+                                    {
+                                        logger.LogDebug("Found roles array in realm_access");
+                                        // Add each role as a separate claim
+                                        foreach (var role in roles.EnumerateArray())
+                                        {
+                                            var roleName = role.GetString();
+                                            if (!string.IsNullOrEmpty(roleName))
+                                            {
+                                                logger.LogInformation("Adding role: {Role}", roleName);
+                                                identity.AddClaim(new Claim(ClaimTypes.Role, roleName));
+                                            }
+                                        }
+                                    }
+                                    else
+                                    {
+                                        logger.LogWarning("No roles array found in realm_access");
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    logger.LogError(ex, "Error processing realm_access");
+                                }
+                            }
+                            else
+                            {
+                                logger.LogWarning("No realm_access claim found");
+                            }
+                        }
+
+                        return Task.CompletedTask;
+                    }
+                };
+            });
+        else
+            // Ghi log bằng Console vì ILogger có thể chưa sẵn sàng đầy đủ ở đây
+            Console.WriteLine(
+                "[WARN] Keycloak configuration section is missing or incomplete (Authority/Audience). JWT Bearer authentication for Keycloak will not be configured.");
+
+        services.AddAuthorization(options =>
+        {
+            options.DefaultPolicy = new AuthorizationPolicyBuilder()
+                .RequireAuthenticatedUser()
+                .Build();
+
+            options.AddPolicy("ApiKeyPolicy", policy =>
+                policy.AddAuthenticationSchemes(ApiKeySchemeConstant)
+                    .RequireAuthenticatedUser());
+
+            options.AddPolicy("AdminPolicy", policy =>
+                policy
+                    .AddAuthenticationSchemes(JwtBearerDefaults
+                        .AuthenticationScheme) // Chỉ định rõ scheme cho policy này
+                    .RequireAuthenticatedUser()
+                    .RequireRole("admin"));
+
+            options.AddPolicy("TerminalPolicy", policy =>
+                policy.AddAuthenticationSchemes(ApiKeySchemeConstant)
+                    .RequireAuthenticatedUser()
+                    .RequireRole("terminal"));
+
+            options.AddPolicy("DataReaderPolicy", policy =>
+                policy.AddAuthenticationSchemes(ApiKeySchemeConstant)
+                    .RequireAuthenticatedUser()
+                    .RequireRole("data_reader"));
+
+            options.AddPolicy("DataWriterPolicy", policy =>
+                policy.AddAuthenticationSchemes(ApiKeySchemeConstant)
+                    .RequireAuthenticatedUser()
+                    .RequireRole("data_writer"));
+
+            options.AddPolicy("DataAdminPolicy", policy =>
+                policy.AddAuthenticationSchemes(JwtBearerDefaults.AuthenticationScheme, ApiKeySchemeConstant)
+                    .RequireAuthenticatedUser()
+                    .RequireRole("admin", "data_admin"));
+        });
+
+        return services;
+    }
+
+
+builder.Services.AddCardlessServerAuthentication(builder.Configuration);
+
+

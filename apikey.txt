@@ -1,0 +1,14 @@
+curl --request POST \
+  --url https://localhost:7118/api/v1/devices/provisioning \
+  --header 'content-digest: SHA-256=+20ILPpQddqzYjxf+3cPRqMjngbcquY4AJmXPopA6qI=' \
+  --header 'content-type: application/json' \
+  --header 'date: Thu, 14 Aug 2025 18:50:30 GMT' \
+  --header 'signature: BASE64_SIGNATURE:' \
+  --header 'signature-input: keyid="pos-zcMnvQaMJdMaZjAHxKleyIcD47MDMbFp", alg="hmac-sha256", components="host date digest""' \
+  --data '{
+  "TerminalId": "T001",
+  "MerchantId": "M001"
+}'
+
+
+e8c88900-133f-4605-84ef-85583cf15fde

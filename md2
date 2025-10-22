@@ -1,0 +1,280 @@
+
+## 1. ENTITIES Select
+
+Sau khi chọn Entity xong url sẽ có dạng /{entityId}/Các chức năng sau...
+
+## 2. BRANCHES
+
+### 🎯 Màn hình: Quản lý chi nhánh url: /{entityId}/branch
+
+#### 2.1. Danh sách chi nhánh
+
+**DTO**: EntityBranchListDto[]
+
+EntityBranchListDto {
+    id?: string;
+    entityId?: string; 
+    branchCode?: string;
+    branchName?: string; 
+    province?: string | undefined; 
+    ward?: string | undefined;
+    contactPhone?: string | undefined;
+    status?: ActiveStatus;
+    createdAt?: Date;
+    latitude?: number | undefined;
+    longitude?: number | undefined;
+}
+
+**Funcition**: client.getBranchesByEntity(entityId: string): Observable<EntityBranchListDto[]>;
+
+**Yêu cầu**
+- Filter:
+  + entityId lấy từ url;
+
+- Button chức năng(icon): Create, Refresh;
+
+- Các cột:
+  Mã chi nhánh: branchCode,
+  Tên: branchName,
+  Tỉnh, thành: province,
+  Xã, phường: ward,
+  SĐT: contactPhone,
+  Trạng thái: status,
+  Thời gian tạo: createdAt
+  Thao tác:
+  + icon-buton chỉnh sửa
+  + icon-button danh sách điểm bán  click vào đi sang url /{entityId}/point-off-sale?branchId={id}
+
+#### 2.2. Chỉnh sửa chi nhánh
+**DTO**: UpdateEntityBranchRequest 
+UpdateEntityBranchRequest {
+    branchName?: string;
+    address?: string | undefined;
+    provinceCode?: string | undefined;
+    wardCode?: string | undefined;
+    postalCode?: string | undefined;
+    latitude?: number | undefined;
+    longitude?: number | undefined;
+    contactPhone?: string | undefined;
+    contactEmail?: string | undefined;
+    managerName?: string | undefined;
+}
+**Funcition**: client.updateEntityBranch(id: string, updateEntityBranchRequest: UpdateEntityBranchRequest): Observable<void>;
+**Yêu cầu**
+- Hiển thị trên modal;
+- Cập nhật thành công: thông báo thành công, update lại vào bảng hiển thị;
+
+#### 2.3. Tạo mới chi nhánh
+**DTO**: CreateEntityBranchRequest 
+CreateEntityBranchRequest {
+    branchCode?: string;
+    branchName?: string;
+    parentBranchId?: string | undefined;
+    address?: string | undefined;
+    provinceCode?: string | undefined;
+    wardCode?: string | undefined;
+    postalCode?: string | undefined;
+    latitude?: number | undefined;
+    longitude?: number | undefined;
+    contactPhone?: string | undefined;
+    contactEmail?: string | undefined;
+    managerName?: string | undefined;
+}
+**Funcition**: client.createEntityBranch(entityId: string, createEntityBranchRequest: CreateEntityBranchRequest): Observable<string>;
+**Yêu cầu**
+- Hiển thị trên modal;
+- Tạo mới thành công: thông báo thành công, update lại vào bảng hiển thị;
+
+
+
+## 3. POINT_OF_SALES
+
+### 🎯 Màn hình: Quản lý điểm bán url: /{entityId}/point-of-sale?{search-param}
+
+#### 3.1. Danh sách điểm bán
+**DTO**: PagedResultOfPointOfSaleListDto
+PagedResultOfPointOfSaleListDto {
+    items?: PointOfSaleListDto[];
+    totalCount?: number;
+    pageNumber?: number;
+    pageSize?: number;
+    totalPages?: number;
+    hasPreviousPage?: boolean;
+    hasNextPage?: boolean;
+}
+PointOfSaleListDto{
+    id?: string;
+    entityId?: string;
+    posCode?: string;
+    posName?: string;
+    city?: string | undefined;
+    status?: ActiveStatus;
+    terminalCount?: number;
+    createdAt?: Date;
+}
+
+enum ActiveStatus {
+    Inactive = 0,
+    Active = 1,
+    Suspended = 2,
+    Pending = 3,
+}
+
+**Funcition**: client.getPointOfSales(entityId: string | null | undefined,branchId: string | null, status: ActiveStatus | null | undefined, searchTerm: string | null | undefined, page: number, pageSize: number): Observable<PagedResultOfPointOfSaleListDto>;
+**Yêu cầu**
+- Filter các trường sau(entityId ăn mặc định trên url): mỗi lần search => thay url param tương ứng
+  + branch: Dropdown (sử dụng api get full branches của entity), có clearResult=> onchange=>search
+  + status: dropdown (ActiveStatus),có clearResult=> onchange=>search
+  + searchTerm: input(enter => search)
+  + những trường còn lại trong func để mặc định
+- Button chức năng(icon): Create, Refresh;
+- Hiển thị các trường:
+    Mã điểm bán: posCode;
+    Tên điểm bán: posName;
+    Địa chỉ: city;
+    Trạng thái: status // hiển thị theo string enum tiếng việt(chỉ cần text);
+    Số lượng terminal: terminalCount // để dạng button text click vào sẽ ra /{entityId}/terminal?pointOfSaleId={id} ;
+    Ngày tạo: createdAt;
+    Thao tác:
+      + icon-button chỉnh sửa
+
+#### 3.2. Chỉnh sửa điểm bán
+**DTO**: UpdatePointOfSaleRequest 
+UpdatePointOfSaleRequest {
+    posName?: string;
+    address?: string | undefined;
+    city?: string | undefined;
+    district?: string | undefined;
+    postalCode?: string | undefined;
+    country?: string;
+    latitude?: number | undefined;
+    longitude?: number | undefined;
+    contactPhone?: string | undefined;
+    managerName?: string | undefined;
+}
+**Funcition**: client.    updatePointOfSale(id: string, updatePointOfSaleRequest: UpdatePointOfSaleRequest): Observable<void>;
+**Yêu cầu**
+- Hiển thị trên modal;
+- Cập nhật thành công: thông báo thành công, update lại vào bảng hiển thị;
+
+#### 3.3. Tạo mới điểm bán
+**DTO**: CreateEntityBranchRequest 
+CreateEntityBranchRequest {
+    branchCode?: string;
+    branchName?: string;
+    parentBranchId?: string | undefined;
+    address?: string | undefined;
+    provinceCode?: string | undefined;
+    wardCode?: string | undefined;
+    postalCode?: string | undefined;
+    latitude?: number | undefined;
+    longitude?: number | undefined;
+    contactPhone?: string | undefined;
+    contactEmail?: string | undefined;
+    managerName?: string | undefined;
+}
+**Funcition**: client.createPointOfSale(createPointOfSaleRequest: CreatePointOfSaleRequest): Observable<PointOfSaleDto>;
+**Yêu cầu**
+- Tạo mới điểm bán hiển thị trên modal;
+- Tạo mới thành công: thông báo thành công, update lại vào bảng hiển thị;
+
+
+
+
+## 4. TERMINAL
+
+### 🎯 Màn hình: Quản lý Terminal url: /{entityId}/terminal?{search-param}
+
+#### 4.1. Danh sách terminal
+**DTO**: PagedResultOfPointOfSaleListDto
+agedResultOfTerminalListDto {
+    items?: TerminalListDto[];
+    totalCount?: number;
+    pageNumber?: number;
+    pageSize?: number;
+    totalPages?: number;
+    hasPreviousPage?: boolean;
+    hasNextPage?: boolean;
+}
+TerminalListDto {
+    id?: string;
+    entityId?: string;
+    terminalCode?: string | undefined;
+    tidCode?: string | undefined;
+    midCode?: string;
+    channelType?: ChannelType;
+    status?: TerminalStatus;
+    pointOfSaleName?: string | undefined;
+    createdAt?: Date;
+}
+enum ChannelType {
+    CARD = 1,
+    QR = 2,
+    ECOM = 3,
+    WALLET = 4,
+    BANK_TRANSFER = 5,
+    CASH = 6,
+}
+
+enum TerminalStatus {
+    Inactive = 0,
+    Active = 1,
+    Suspended = 2,
+    Closed = 3,
+    PendingActivation = 4,
+}
+
+**Funcition**: client.getTerminals(entityId: string | null | undefined, merchantProfileId: string | null | undefined, pointOfSaleId: string | null | undefined, channelType: ChannelType | null | undefined, status: TerminalStatus | null | undefined, searchTerm: string | null | undefined, page: number, pageSize: number): Observable<PagedResultOfTerminalListDto>;
+**Yêu cầu**
+- Filter các trường sau(entityId ăn mặc định trên url): mỗi lần search => thay url param tương ứng
+  + entityId lấy từ url gốc
+  + pointOfSaleId: AutoComplete, có clear Icon=> onchange=>search
+    Sử dụng hàm client.getBranchesByEntity(entityId: string): Observable<SearchPointOfSaleDto[]>;
+    SearchPointOfSaleDto {
+      id?: string; // key
+      posName?: string; // label
+    }
+
+  + channelType : dropdown (enum ChannelType),có clear Icon=> onchange=>search
+  + status : dropdown (enum TerminalStatus),có clear Icon=> onchange=>search
+  + searchTerm: input(enter => search)
+  + những trường còn lại trong func để mặc định
+- Button chức năng(icon): Create, Refresh;
+- Hiển thị các trường:
+  + tất cả các trường trong: TerminalListDto trừ trường id
+- Các chức năng của row:
+  + Chỉnh sửa terminal
+
+
+#### 4.2. Chỉnh sửa terminal
+**DTO**: UpdateTerminalRequest 
+UpdateTerminalRequest {
+    pointOfSaleId?: string | undefined;
+    settlementAccountId?: string | undefined;
+    terminalCode?: string | undefined;
+    tidCode?: string | undefined;
+    midCode?: string;
+    capabilitiesJson?: string | undefined;
+}
+**Funcition**: client. updateTerminal(id: string, updateTerminalRequest: UpdateTerminalRequest): Observable<void>;
+**Yêu cầu**
+- Hiển thị trên modal;
+- Cập nhật thành công: thông báo thành công, update lại vào bảng hiển thị;
+
+#### 4.3. Tạo mới terminal
+**DTO**: CreateTerminalRequest 
+CreateTerminalRequest {
+    merchantProfileId?: string;
+    pointOfSaleId?: string | undefined;
+    settlementAccountId?: string | undefined;
+    terminalCode?: string | undefined;
+    tidCode?: string | undefined;
+    midCode?: string;
+    channelType?: ChannelType;
+    capabilitiesJson?: string | undefined;
+}
+**Funcition**: client.createTerminal(createTerminalRequest: CreateTerminalRequest): Observable<string>;
+**Yêu cầu**
+- Hiển thị trên modal;
+- Tạo mới thành công: thông báo thành công, update lại vào bảng hiển thị;
+
